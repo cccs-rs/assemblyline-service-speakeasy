@@ -1,0 +1,66 @@
+# Name of the service
+name: Speakeasy
+# Version of the service
+version: $SERVICE_TAG
+# Description of the service
+description: This service provides Mandiant's Speakeasy integration to emulate and reverse shellcode.
+
+# Regex defining the types of files the service accepts and rejects
+accepts: executable/windows/.*
+rejects: empty|metadata/.*|executable/windows/dos
+
+# At which stage the service should run (one of FILTER, EXTRACT, CORE, SECONDARY, POST, REVIEW)
+# NOTE: Stages are executed in the order defined in the list
+stage: CORE
+# Which category the service is part of (one of Antivirus, Dynamic Analysis, External, Extraction, Filtering, Internet Connected, Networking, Static Analysis)
+category: Dynamic Analysis
+
+# Does the service require access to the file to perform its task
+# If set to false, the service will only have access to the file metadata (e.g. Hashes, size, type, ...)
+file_required: true
+# Maximum execution time the service has before it's considered to be timed out
+timeout: 120
+
+# is the service enabled by default
+enabled: false
+
+# Service heuristic blocks: List of heuristic objects that define the different heuristics used in the service
+heuristics:
+  - heur_id: 1
+    name: Multiple TLS Callbacks Detected
+    score: 100
+    filetype: "executable/windows"
+    description: "The PE file contains more than one TLS callback function."
+  - heur_id: 2
+    name: VirtualAlloc with Execute/Write Permissions
+    score: 150
+    filetype: "executable/windows"
+    description: "The PE file allocates memory with both execute and write permissions."
+  - heur_id: 3
+    name: Loads Potentially Suspicious DLL
+    score: 75
+    filetype: "executable/windows"
+    description: "The PE file loads a DLL that is often associated with malicious activity."
+  - heur_id: 4
+    name: High Number of GetProcAddress Calls
+    score: 60
+    filetype: "executable/windows"
+    description: "The PE file makes a large number of calls to GetProcAddress."
+  - heur_id: 5
+    name: Calls Suspicious API Function
+    score: 120
+    filetype: "executable/windows"
+    description: "The PE file calls an API function commonly used in malicious activities."
+  - heur_id: 6
+    name: Dynamic Code Segments Detected
+    score: 130
+    filetype: "executable/windows"
+    description: "The PE file creates or modifies code segments at runtime."
+
+# Docker configuration block which defines:
+#  - the name of the docker container that will be created
+#  - CPU and ram allocation by the container
+docker_config:
+  image: ${REGISTRY}testing/assemblyline-service-speakeasy:$SERVICE_TAG
+  cpu_cores: 1.0
+  ram_mb: 1024
