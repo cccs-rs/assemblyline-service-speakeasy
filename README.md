@@ -11,12 +11,7 @@ The `SpeakeasyEmulator` service is designed to:
   controlled environment managed by Assemblyline.
 * **Generate a detailed report:** Speakeasy produces a JSON report containing information about API calls, entry points,
   and other execution details, accessible as a supplementary file in Assemblyline.
-* **Identify triage indicators for Assemblyline:** The service analyzes the Speakeasy report and flags specific patterns
-  and behaviors often associated with suspicious or malicious files, presenting these findings within Assemblyline's
-  result structure.
-* **Seamless Assemblyline Integration:** Built using the Assemblyline v4 framework, ensuring smooth operation within an
-  Assemblyline pipeline.
-
+  
 ## Triage Indicators Identified
 
 The service currently identifies the following indicators based on the Speakeasy report:
