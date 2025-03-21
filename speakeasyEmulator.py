@@ -12,6 +12,9 @@ class SpeakeasyEmulator(ServiceBase):
     def __init__(self, config=None):
         super(SpeakeasyEmulator, self).__init__(config)
         self.se: Speakeasy = Speakeasy()
+        self.sus_apis = self.config.get('SUS_APIS', {})
+        self.sus_dlls = self.config.get('SUS_DLLS', {})
+        self.getprocaddr_threshold = self.config.get('GETPROCADDR_THRESHOLD', 50)
 
     def start(self):
         # ==================================================================
@@ -19,6 +22,8 @@ class SpeakeasyEmulator(ServiceBase):
         #   Your service might have to do some warming up on startup to make things faster
         # ==================================================================
         self.log.info(f"start() from {self.service_attributes.name} service called")
+        self.log.info(
+            f"{self.service_attributes.name} Config: SUS_APIS={self.sus_apis} SUSDLLS={self.sus_dlls} GETPROCADDR_THRESHOLD={self.getprocaddr_threshold}")
 
     def execute(self, request: ServiceRequest) -> None:
         # ==================================================================
@@ -54,10 +59,12 @@ class SpeakeasyEmulator(ServiceBase):
         has_triage_indicators = False
 
         if "entry_points" in report and isinstance(report["entry_points"], list):
-            tls_callback_count = sum(1 for ep in report["entry_points"] if ep.get("ep_type", "").startswith("tls_callback"))
+            tls_callback_count = sum(
+                1 for ep in report["entry_points"] if ep.get("ep_type", "").startswith("tls_callback"))
             if tls_callback_count > 1:
                 has_triage_indicators = True
-                tls_section = ResultSection(f"Multiple TLS Callbacks Found: {tls_callback_count}", parent=triage_section)
+                tls_section = ResultSection(f"Multiple TLS Callbacks Found: {tls_callback_count}",
+                                            parent=triage_section)
                 tls_section.set_heuristic(1)  # Define heuristic ID 1 in your service manifest
                 for i, ep in enumerate(report["entry_points"]):
                     if ep.get("ep_type", "").startswith("tls_callback"):
@@ -65,17 +72,18 @@ class SpeakeasyEmulator(ServiceBase):
 
             for entry_point in report["entry_points"]:
                 ep_type = entry_point.get("ep_type")
-                apis = entry_point.get("apis",)
+                apis = entry_point.get("apis", )
 
                 if ep_type == "module_entry":
                     for api_call in apis:
                         api_name = api_call.get("api_name")
-                        args = api_call.get("args",)
+                        args = api_call.get("args", )
 
                         if api_name == "KERNEL32.VirtualAlloc":
                             if len(args) > 3 and "PAGE_EXECUTE_READWRITE" in args[3]:
                                 has_triage_indicators = True
-                                va_section = ResultSection("VirtualAlloc with PAGE_EXECUTE_READWRITE", parent=triage_section)
+                                va_section = ResultSection("VirtualAlloc with PAGE_EXECUTE_READWRITE",
+                                                           parent=triage_section)
                                 va_section.set_heuristic(2)  # Define heuristic ID 2
                                 va_section.add_line(f"  Address: {api_call.get('pc')}")
                                 va_section.add_line(f"  Arguments: {args}")
@@ -83,38 +91,26 @@ class SpeakeasyEmulator(ServiceBase):
                         elif api_name in ["KERNEL32.LoadLibraryA", "KERNEL32.LoadLibraryW"]:
                             if len(args) > 0:
                                 dll_name = args[0]
-                                suspicious_dlls = [
-                                    "SHELL32.dll", "ADVAPI32.dll", "OLEAUT32.dll", "ole32.dll",
-                                    "COMCTL32.dll", "ntdll.dll", "gdiplus.dll", "UxTheme.dll"
-                                ]  # Add more as needed
-                                if dll_name in suspicious_dlls:
+                                if dll_name in self.sus_dlls:
                                     has_triage_indicators = True
-                                    load_lib_section = ResultSection(f"Loading Potentially Suspicious DLL: {dll_name}", parent=triage_section)
+                                    load_lib_section = ResultSection(f"Loading Potentially Suspicious DLL: {dll_name}",
+                                                                     parent=triage_section)
                                     load_lib_section.set_heuristic(3)  # Define heuristic ID 3
                                     load_lib_section.add_line(f"  Address: {api_call.get('pc')}")
 
                         elif api_name == "KERNEL32.GetProcAddress":
-                            if len(apis) > 50 and apis.index(api_call) > len(apis) // 2:  # Heuristic for many GetProcAddress calls
+                            if len(apis) > 50 and apis.index(api_call) > len(
+                                    apis) // 2:  # Heuristic for many GetProcAddress calls
                                 has_triage_indicators = True
-                                get_proc_addr_section = ResultSection("High Number of GetProcAddress Calls", parent=triage_section)
-                                get_proc_addr_section.set_heuristic(4) # Define heuristic ID 4
+                                get_proc_addr_section = ResultSection("High Number of GetProcAddress Calls",
+                                                                      parent=triage_section)
+                                get_proc_addr_section.set_heuristic(4)  # Define heuristic ID 4
                                 get_proc_addr_section.add_line(f"  Address: {api_call.get('pc')}")
 
-                        suspicious_api_names = [
-                            "CreateRemoteThread", "URLDownloadToFileA", "URLDownloadToFileW",
-                            "InternetOpenUrlA", "InternetOpenUrlW", "Socket", "Connect", "Send", "Receive",
-                            "CreateProcessA", "CreateProcessW", "ShellExecuteA", "ShellExecuteW", "system",
-                            "RegOpenKeyExA", "RegOpenKeyExW", "RegCreateKeyExA", "RegCreateKeyExW",
-                            "RegSetValueExA", "RegSetValueExW", "RegDeleteKeyA", "RegDeleteKeyW",
-                            "CreateFileA", "CreateFileW", "WriteFile", "ReadFile", "DeleteFileA", "DeleteFileW",
-                            "CopyFileA", "CopyFileW", "MoveFileA", "MoveFileW", "WriteProcessMemory",
-                            "ReadProcessMemory", "SetWindowsHookExA", "SetWindowsHookExW",
-                            "RegisterStartupApp", "CreateServiceA", "CreateServiceW", "StartServiceA", "StartServiceW",
-                            "IsDebuggerPresent", "CheckRemoteDebuggerPresent", "NtQueryInformationProcess"
-                        ]
-                        if api_name in suspicious_api_names:
+                        if api_name in self.sus_apis:
                             has_triage_indicators = True
-                            suspicious_api_section = ResultSection(f"Suspicious API Call: {api_name}", parent=triage_section)
+                            suspicious_api_section = ResultSection(f"Suspicious API Call: {api_name}",
+                                                                   parent=triage_section)
                             suspicious_api_section.set_heuristic(5)  # Define heuristic ID 5
                             suspicious_api_section.add_line(f"  Address: {api_call.get('pc')}")
                             if args:
@@ -122,7 +118,8 @@ class SpeakeasyEmulator(ServiceBase):
 
                 if "dynamic_code_segments" in entry_point and entry_point["dynamic_code_segments"]:
                     has_triage_indicators = True
-                    dynamic_code_section = ResultSection(f"Dynamic Code Segments Found in {ep_type}", parent=triage_section)
+                    dynamic_code_section = ResultSection(f"Dynamic Code Segments Found in {ep_type}",
+                                                         parent=triage_section)
                     dynamic_code_section.set_heuristic(6)  # Define heuristic ID 6
                     for segment in entry_point["dynamic_code_segments"]:
                         dynamic_code_section.add_line(f"  Start: {segment.get('start')}, End: {segment.get('end')}")

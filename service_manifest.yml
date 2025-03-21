@@ -5,6 +5,26 @@ version: $SERVICE_TAG
 # Description of the service
 description: This service provides Mandiant's Speakeasy integration to emulate and reverse shellcode.
 
+# A list of Windows API function names that the service will flag as suspicious if called during emulation.
+config:
+  SUS_APIS: [
+    "CreateRemoteThread", "URLDownloadToFileA", "URLDownloadToFileW",
+    "InternetOpenUrlA", "InternetOpenUrlW", "Socket", "Connect", "Send", "Receive",
+    "CreateProcessA", "CreateProcessW", "ShellExecuteA", "ShellExecuteW", "system",
+    "RegOpenKeyExA", "RegOpenKeyExW", "RegCreateKeyExA", "RegCreateKeyExW",
+    "RegSetValueExA", "RegSetValueExW", "RegDeleteKeyA", "RegDeleteKeyW",
+    "CreateFileA", "CreateFileW", "WriteFile", "ReadFile", "DeleteFileA", "DeleteFileW",
+    "CopyFileA", "CopyFileW", "MoveFileA", "MoveFileW", "WriteProcessMemory",
+    "ReadProcessMemory", "SetWindowsHookExA", "SetWindowsHookExW",
+    "RegisterStartupApp", "CreateServiceA", "CreateServiceW", "StartServiceA", "StartServiceW",
+    "IsDebuggerPresent", "CheckRemoteDebuggerPresent", "NtQueryInformationProcess"
+  ]
+  SUS_DLLS: [
+    "SHELL32.dll", "ADVAPI32.dll", "OLEAUT32.dll", "ole32.dll",
+    "COMCTL32.dll", "ntdll.dll", "gdiplus.dll", "UxTheme.dll"
+  ]
+  GETPROCADDR_THRESHOLD: 50
+
 # Regex defining the types of files the service accepts and rejects
 accepts: executable/windows/.*
 rejects: empty|metadata/.*|executable/windows/dos
