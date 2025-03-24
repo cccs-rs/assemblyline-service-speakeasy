@@ -1,6 +1,12 @@
-import os
-import json
+"""
+Speakeasy Emulator Service for AssemblyLine
 
+This service uses the Speakeasy emulation engine to analyze Windows executables.
+It emulates the execution of PE files and reports on suspicious behaviors, API calls,
+and other indicators that might suggest malicious activity.
+"""
+
+import os
 from assemblyline_v4_service.common.base import ServiceBase
 from assemblyline_v4_service.common.request import ServiceRequest
 from assemblyline_v4_service.common.result import Result, ResultSection
@@ -8,121 +14,239 @@ from speakeasy import Speakeasy
 from speakeasy.errors import SpeakeasyError
 
 
+def is_shellcode(report, is_pe):
+    """Determines if the analyzed file is a shellcode blob based on entry point analysis."""
+    # Return False immediately if this is a PE file
+    if is_pe:
+        return False
+
+    # If no entry points exist, it cannot be valid shellcode
+    entry_points = report.get('entry_points', [])
+    if not entry_points:
+        return False
+
+    # Examine the first entry point
+    main_entry = entry_points[0]
+    error = main_entry.get('error', {})
+    error_addr = error.get('pc', -1)
+    start_addr = main_entry.get('start_addr', 0)
+
+    # If there is any error, check if it happened at the entry_point's start_addr, if it did, shellcode is invalid.
+    return error_addr != start_addr
+
+
 class SpeakeasyEmulator(ServiceBase):
+    """
+    SpeakeasyEmulator service class for AssemblyLine.
+
+    This service emulates Windows executables using the Speakeasy engine and
+    analyzes their behavior for potentially malicious indicators.
+    """
+
     def __init__(self, config=None):
-        super(SpeakeasyEmulator, self).__init__(config)
+        super().__init__(config)
+        # Speakeasy Instance to be used throughout this service's execution
         self.se: Speakeasy = Speakeasy()
+        self.is_shellcode = False
+
+        # Dictionary of suspicious API calls to monitor
         self.sus_apis = self.config.get('SUS_APIS', {})
+        # Dictionary of suspicious DLLs to monitor loading of from LoadLibraryA/W
         self.sus_dlls = self.config.get('SUS_DLLS', {})
-        self.getprocaddr_threshold = self.config.get('GETPROCADDR_THRESHOLD', 50)
+        # Threshold for flagging excessive GetProcAddress calls
+        self.getprocaddr_threshold = self.config.get('GETPROCADDR_THRESHOLD', 15)
+        # Should emulate all entrypoints and exports? If false, will only emulate the main entrypoint
+        self.all_entrypoints = self.config.get('EMULATE_ALL_ENTRYPOINTS', False)
+        # Should emulate children processes created by the executable?
+        self.emulate_children = self.config.get('EMULATE_CHILDREN', False)
+        # Max File Size
+        self.max_file_size = self.config.get('MAX_FILE_SIZE', 52428800)
+        # Architecture to use, for when the file provided is not a PE, and shellcode analysis is needed.
+        self.shellcode_arch = self.config.get('SHELLCODE_ARCH', 'amd64')
 
     def start(self):
-        # ==================================================================
-        # Startup actions:
-        #   Your service might have to do some warming up on startup to make things faster
-        # ==================================================================
+        """Service startup method."""
         self.log.info(f"start() from {self.service_attributes.name} service called")
         self.log.info(
-            f"{self.service_attributes.name} Config: SUS_APIS={self.sus_apis} SUSDLLS={self.sus_dlls} GETPROCADDR_THRESHOLD={self.getprocaddr_threshold}")
+            f"{self.service_attributes.name} Config: SUS_APIS={self.sus_apis} SUSDLLS={self.sus_dlls} "
+            f"GETPROCADDR_THRESHOLD={self.getprocaddr_threshold} {self}")
 
     def execute(self, request: ServiceRequest) -> None:
-        # ==================================================================
-        # Execute a request:
-        #   Every time your service receives a new file to scan, the execute function is called.
-        #   This is where you should execute your processing code.
-        #   For this example, we will only generate results ...
-        # ==================================================================
         result = Result()
-        request.result = result
 
-        try:
-            module = self.se.load_module(request.file_path)
-        except SpeakeasyError as e:
-            error = str(e)
-            speakeasy_section = ResultSection("Speakeasy Error")
-            speakeasy_section.add_line(error)
-            result.add_section(speakeasy_section)
-            self.log.error(error)
+        # Check if the file size exceeds the maximum allowed size
+        if request.file_size > self.max_file_size:
             return
 
-        self.se.run_module(module)
+        # Do PE analysis
+        is_pe = self.se.is_pe(data=request.file_contents)
+        try:
+            if is_pe:
+                # Load the file into Speakeasy
+                module = self.se.load_module(request.file_path)
 
-        report_json = self.se.get_json_report()
-        report = json.loads(report_json)
+                # Run the emulation
+                self.se.run_module(module, all_entrypoints=self.all_entrypoints, emulate_children=self.emulate_children)
+            else:
+                # Try as Shellcode instead
+                shellcode = self.se.load_shellcode(request.file_path, self.shellcode_arch)
+                self.se.run_shellcode(shellcode)
 
-        temp_path = os.path.join(self.working_directory, "speakeasy.json")
+
+        except SpeakeasyError as e:
+            # Handle Speakeasy errors
+            self.log.error(str(e))
+            raise e
+
+        # Analyze the report for suspicious behaviors
+        report = self.se.get_report()
+        self.is_shellcode = is_shellcode(report, is_pe)
+
+        if self.is_shellcode == False and is_pe == False:
+            self.log.debug("File is not a PE file or shellcode")
+            return
+
+        # Get the emulation report in JSON format and save it as a supplementary file
+        filename = os.path.basename(request.file_path)
+        temp_path = os.path.join(self.working_directory, f"speakeasy_report_{filename}.json")
         with open(temp_path, "w") as f:
-            f.write(report_json)
+            f.write(self.se.get_json_report())
         request.add_supplementary(temp_path, "Speakeasy Report", "Emulation report generated by Speakeasy")
+
+        self.analyze_report(report, result)
+
+        request.result = result
+
+    def analyze_report(self, report, result):
+        """Analyze the Speakeasy report for suspicious behaviors."""
+        entry_points = report.get('entry_points', [])
+        if not entry_points:
+            self.log.debug("No entry points found in the report")
+            return
 
         triage_section = ResultSection("PE File Triage Indicators (Speakeasy)")
         has_triage_indicators = False
 
-        if "entry_points" in report and isinstance(report["entry_points"], list):
-            tls_callback_count = sum(
-                1 for ep in report["entry_points"] if ep.get("ep_type", "").startswith("tls_callback"))
-            if tls_callback_count > 1:
-                has_triage_indicators = True
-                tls_section = ResultSection(f"Multiple TLS Callbacks Found: {tls_callback_count}",
-                                            parent=triage_section)
-                tls_section.set_heuristic(1)  # Define heuristic ID 1 in your service manifest
-                for i, ep in enumerate(report["entry_points"]):
-                    if ep.get("ep_type", "").startswith("tls_callback"):
-                        tls_section.add_line(f"  TLS Callback {i}: Start Address: {ep.get('start_addr')}")
+        if self.is_shellcode:
+            shellcode_section = ResultSection(f"File is a shellcode blob", parent=triage_section)
+            shellcode_section.set_heuristic(7)
+            shellcode_section.add_line("File contents were emulated as shellcode")
 
-            for entry_point in report["entry_points"]:
-                ep_type = entry_point.get("ep_type")
-                apis = entry_point.get("apis", )
-
-                if ep_type == "module_entry":
-                    for api_call in apis:
-                        api_name = api_call.get("api_name")
-                        args = api_call.get("args", )
-
-                        if api_name == "KERNEL32.VirtualAlloc":
-                            if len(args) > 3 and "PAGE_EXECUTE_READWRITE" in args[3]:
-                                has_triage_indicators = True
-                                va_section = ResultSection("VirtualAlloc with PAGE_EXECUTE_READWRITE",
-                                                           parent=triage_section)
-                                va_section.set_heuristic(2)  # Define heuristic ID 2
-                                va_section.add_line(f"  Address: {api_call.get('pc')}")
-                                va_section.add_line(f"  Arguments: {args}")
-
-                        elif api_name in ["KERNEL32.LoadLibraryA", "KERNEL32.LoadLibraryW"]:
-                            if len(args) > 0:
-                                dll_name = args[0]
-                                if dll_name in self.sus_dlls:
-                                    has_triage_indicators = True
-                                    load_lib_section = ResultSection(f"Loading Potentially Suspicious DLL: {dll_name}",
-                                                                     parent=triage_section)
-                                    load_lib_section.set_heuristic(3)  # Define heuristic ID 3
-                                    load_lib_section.add_line(f"  Address: {api_call.get('pc')}")
-
-                        elif api_name == "KERNEL32.GetProcAddress":
-                            if len(apis) > 50 and apis.index(api_call) > len(
-                                    apis) // 2:  # Heuristic for many GetProcAddress calls
-                                has_triage_indicators = True
-                                get_proc_addr_section = ResultSection("High Number of GetProcAddress Calls",
-                                                                      parent=triage_section)
-                                get_proc_addr_section.set_heuristic(4)  # Define heuristic ID 4
-                                get_proc_addr_section.add_line(f"  Address: {api_call.get('pc')}")
-
-                        if api_name in self.sus_apis:
-                            has_triage_indicators = True
-                            suspicious_api_section = ResultSection(f"Suspicious API Call: {api_name}",
-                                                                   parent=triage_section)
-                            suspicious_api_section.set_heuristic(5)  # Define heuristic ID 5
-                            suspicious_api_section.add_line(f"  Address: {api_call.get('pc')}")
-                            if args:
-                                suspicious_api_section.add_line(f"  Arguments: {args}")
-
-                if "dynamic_code_segments" in entry_point and entry_point["dynamic_code_segments"]:
-                    has_triage_indicators = True
-                    dynamic_code_section = ResultSection(f"Dynamic Code Segments Found in {ep_type}",
-                                                         parent=triage_section)
-                    dynamic_code_section.set_heuristic(6)  # Define heuristic ID 6
-                    for segment in entry_point["dynamic_code_segments"]:
-                        dynamic_code_section.add_line(f"  Start: {segment.get('start')}, End: {segment.get('end')}")
+        has_triage_indicators |= self._analyze_tls_callbacks(entry_points, triage_section)
+        has_triage_indicators |= self._analyze_api_calls(entry_points, triage_section)
+        has_triage_indicators |= self._analyze_dynamic_code_segments(entry_points, triage_section)
+        has_triage_indicators |= self._analyze_network_activity(entry_points, triage_section)
 
         if has_triage_indicators:
             result.add_section(triage_section)
+        else:
+            self.log.debug("No suspicious indicators found in the report")
+
+    def _analyze_tls_callbacks(self, entry_points, triage_section):
+        tls_callback_count = sum(1 for ep in entry_points if ep.get("ep_type", "").startswith("tls_callback"))
+        if tls_callback_count > 1:
+            tls_section = ResultSection(f"Multiple TLS Callbacks Found: {tls_callback_count}", parent=triage_section)
+            tls_section.set_heuristic(1)
+            for i, ep in enumerate(entry_points):
+                if ep.get("ep_type", "").startswith("tls_callback"):
+                    tls_section.add_line(f"TLS Callback {i}: Start Address: {ep.get('start_addr')}")
+            return True
+        return False
+
+    def _analyze_api_calls(self, entry_points, triage_section):
+        has_indicators = False
+        va_section = None
+        load_lib_section = None
+        get_proc_addr_section = None
+        sus_api_section_via_getprocaddr = None
+        sus_api_section = None
+
+        for entry_point in entry_points:
+            if entry_point.get("ep_type") == "module_entry":
+                apis = entry_point.get("apis", [])
+                for api_call in apis:
+                    api_name = api_call.get("api_name")
+                    args = api_call.get("args", [])
+
+                    if api_name == "KERNEL32.VirtualAlloc" and len(args) > 3 and "PAGE_EXECUTE_READWRITE" in args[3]:
+                        if va_section is None:
+                            va_section = ResultSection("VirtualAlloc with PAGE_EXECUTE_READWRITE",
+                                                       parent=triage_section)
+                            va_section.set_heuristic(2)
+                        va_section.add_line(
+                            f"Entry Point: {entry_point}, Address: {api_call.get('pc')}, Arguments: {args}")
+                        has_indicators = True
+
+                    elif api_name in ["KERNEL32.LoadLibraryA", "KERNEL32.LoadLibraryW"] and len(args) > 0 and args[
+                        0] in self.sus_dlls:
+                        if load_lib_section is None:
+                            load_lib_section = ResultSection(f"Loading Potentially Suspicious DLL: {args[0]}",
+                                                             parent=triage_section)
+                            load_lib_section.set_heuristic(3)
+                        load_lib_section.add_line(f"Loading API Used: {api_name}")
+                        load_lib_section.add_line(f"Address: {api_call.get('pc')}")
+                        load_lib_section.add_line(f"Arguments: {args}")
+                        has_indicators = True
+
+                    elif api_name == "KERNEL32.GetProcAddress":
+                        if len(apis) > self.getprocaddr_threshold and apis.index(api_call) > len(apis) // 2:
+                            if get_proc_addr_section is None:
+                                get_proc_addr_section = ResultSection("High Number of GetProcAddress Calls",
+                                                                      parent=triage_section)
+                                get_proc_addr_section.set_heuristic(4)
+                            get_proc_addr_section.add_line(f"Address: {api_call.get('pc')}")
+                            has_indicators = True
+                        if len(args) > 1 and args[1] in self.sus_apis:
+                            if sus_api_section_via_getprocaddr is None:
+                                suspicious_api_section = ResultSection(
+                                    f"Suspicious API Reference (via GetProcAddress): {args[1]}", parent=triage_section)
+                                suspicious_api_section.set_heuristic(5)
+                            sus_api_section_via_getprocaddr.add_line(f"Address: {api_call.get('pc')}")
+                            sus_api_section_via_getprocaddr.add_line(f"Arguments: {args}")
+                            has_indicators = True
+
+                    elif api_name in self.sus_apis:
+                        if sus_api_section is None:
+                            sus_api_section = ResultSection(f"Suspicious API Call: {api_name}",
+                                                            parent=triage_section)
+                            sus_api_section.set_heuristic(5)
+                        sus_api_section.add_line(f"Address: {api_call.get('pc')}")
+                        sus_api_section.add_line(f"Arguments: {args}")
+                        has_indicators = True
+        return has_indicators
+
+    def _analyze_dynamic_code_segments(self, entry_points, triage_section):
+        has_indicators = False
+        dynamic_code_section = None
+        for entry_point in entry_points:
+            dynamic_code_segments = entry_point.get("dynamic_code_segments", [])
+            if dynamic_code_segments:
+                if dynamic_code_section is None:
+                    dynamic_code_section = ResultSection(f"Dynamic Code Segments Found in {entry_point.get('ep_type')}",
+                                                         parent=triage_section)
+                    dynamic_code_section.set_heuristic(6)
+                for segment in dynamic_code_segments:
+                    dynamic_code_section.add_line(
+                        f"Tag: {segment.get('tag')}, Base: {segment.get('base')}, Size: {segment.get('size')}")
+                has_indicators = True
+        return has_indicators
+
+    def _analyze_network_activity(self, entry_points, triage_section):
+        has_indicators = False
+        net_section = None
+        for entry_point in entry_points:
+            network_events = entry_point.get("network_events", {})
+            if network_events:
+                for traffic in network_events.get("traffic", []):
+                    if self.is_shellcode:
+                        if net_section is None:
+                            net_section = ResultSection("Shellcode Network Activity Detected", parent=triage_section)
+                            net_section.set_heuristic(8)
+                        net_section.add_line(f"Traffic: {traffic}")
+                    else:
+                        if net_section is None:
+                            net_section = ResultSection("Network Activity Detected", parent=triage_section)
+                            net_section.set_heuristic(9)
+                        net_section.add_line(f"Traffic: {traffic}")
+                has_indicators = True
+        return has_indicators

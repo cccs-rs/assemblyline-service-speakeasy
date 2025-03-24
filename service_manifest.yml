@@ -3,10 +3,10 @@ name: Speakeasy
 # Version of the service
 version: $SERVICE_TAG
 # Description of the service
-description: This service provides Mandiant's Speakeasy integration to emulate and reverse shellcode.
+description: Emulates Windows executables via Speakeasy, then analyzes the generated report for malware indicators.
 
-# A list of Windows API function names that the service will flag as suspicious if called during emulation.
 config:
+  # A list of Windows API function names that the service will flag as suspicious if called during emulation.
   SUS_APIS: [
     "CreateRemoteThread", "URLDownloadToFileA", "URLDownloadToFileW",
     "InternetOpenUrlA", "InternetOpenUrlW", "Socket", "Connect", "Send", "Receive",
@@ -19,15 +19,24 @@ config:
     "RegisterStartupApp", "CreateServiceA", "CreateServiceW", "StartServiceA", "StartServiceW",
     "IsDebuggerPresent", "CheckRemoteDebuggerPresent", "NtQueryInformationProcess"
   ]
+  # List of DLLs to monitor loading of from LoadLibraryA/W
   SUS_DLLS: [
     "SHELL32.dll", "ADVAPI32.dll", "OLEAUT32.dll", "ole32.dll",
     "COMCTL32.dll", "ntdll.dll", "gdiplus.dll", "UxTheme.dll"
   ]
-  GETPROCADDR_THRESHOLD: 50
+  # Threshold for flagging excessive GetProcAddress calls in the second half of execution.
+  GETPROCADDR_THRESHOLD: 15
+  # Should emulate all entrypoints and exports? If false, will only emulate the main entrypoint
+  EMULATE_ALL_ENTRYPOINTS: true
+  # Should emulate children processes created by the executable?
+  EMULATE_CHILDREN: true
+  # Max File Size (bytes) to analyze. Default 52428800 (50MB)
+  MAX_FILE_SIZE: 52428800
+  # Architecture to emulate (For shellcode only). Supported: amd64, x86
+  SHELLCODE_ARCH: "amd64"
 
 # Regex defining the types of files the service accepts and rejects
-accepts: executable/windows/.*
-rejects: empty|metadata/.*|executable/windows/dos
+accepts: .*
 
 # At which stage the service should run (one of FILTER, EXTRACT, CORE, SECONDARY, POST, REVIEW)
 # NOTE: Stages are executed in the order defined in the list
@@ -39,10 +48,10 @@ category: Dynamic Analysis
 # If set to false, the service will only have access to the file metadata (e.g. Hashes, size, type, ...)
 file_required: true
 # Maximum execution time the service has before it's considered to be timed out
-timeout: 120
+timeout: 480
 
 # is the service enabled by default
-enabled: false
+enabled: true
 
 # Service heuristic blocks: List of heuristic objects that define the different heuristics used in the service
 heuristics:
@@ -50,32 +59,42 @@ heuristics:
     name: Multiple TLS Callbacks Detected
     score: 100
     filetype: "executable/windows"
-    description: "The PE file contains more than one TLS callback function."
+    description: The PE file contains more than one TLS callbacks. Multiple TLS callbacks are rare in legitimate software but common in malware for executing code before the main entry point to evade detection.
   - heur_id: 2
     name: VirtualAlloc with Execute/Write Permissions
-    score: 150
+    score: 200
     filetype: "executable/windows"
-    description: "The PE file allocates memory with both execute and write permissions."
+    description: The PE file allocates memory with both execute and write permissions. Malware often allocates memory with execute permissions to inject code.
   - heur_id: 3
     name: Loads Potentially Suspicious DLL
-    score: 75
+    score: 300
     filetype: "executable/windows"
-    description: "The PE file loads a DLL that is often associated with malicious activity."
+    description: The PE file loads a DLL using either 'LoadLibraryA' or 'LoadLibraryW' that is specified in the SUS_DLLS configuration variable.
   - heur_id: 4
     name: High Number of GetProcAddress Calls
-    score: 60
+    score: 400
     filetype: "executable/windows"
-    description: "The PE file makes a large number of calls to GetProcAddress."
+    description: The PE file makes excessive number of calls to GetProcAddress in the second half of execution. Malware often dynamically resolves APIs late in execution after unpacking/decryption.
   - heur_id: 5
     name: Calls Suspicious API Function
-    score: 120
+    score: 300
     filetype: "executable/windows"
-    description: "The PE file calls an API function commonly used in malicious activities."
+    description: The PE file calls an API function that is specified in the SUS_APIS configuration variable.
   - heur_id: 6
     name: Dynamic Code Segments Detected
     score: 130
     filetype: "executable/windows"
-    description: "The PE file creates or modifies code segments at runtime."
+    description: The PE file creates or modifies code segments at runtime. Malware often generates code at runtime to evade static analysis.
+  - heur_id: 7
+    name: Shellcode Detected
+    score: 1000
+    filetype: "*"
+    description: File is a shellcode blob and successfully emulated.
+  - heur_id: 8
+    name: Shellcode Network Activity Detected
+    score: 1000
+    filetype: "*"
+    description: Shellcode successfully performed network activity.
 
 # Docker configuration block which defines:
 #  - the name of the docker container that will be created
