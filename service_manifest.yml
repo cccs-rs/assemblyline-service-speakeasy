@@ -58,33 +58,33 @@ heuristics:
   - heur_id: 1
     name: Multiple TLS Callbacks Detected
     score: 100
-    filetype: "executable/windows"
-    description: The PE file contains more than one TLS callbacks. Multiple TLS callbacks are rare in legitimate software but common in malware for executing code before the main entry point to evade detection.
+    filetype: "*"
+    description: The process contains more than one TLS callbacks. Multiple TLS callbacks are rare in legitimate software but common in malware for executing code before the main entry point to evade detection.
   - heur_id: 2
     name: VirtualAlloc with Execute/Write Permissions
     score: 200
-    filetype: "executable/windows"
-    description: The PE file allocates memory with both execute and write permissions. Malware often allocates memory with execute permissions to inject code.
+    filetype: "*"
+    description: The process allocates memory with both execute and write permissions. Malware often allocates memory with execute permissions to inject code.
   - heur_id: 3
     name: Loads Potentially Suspicious DLL
     score: 300
-    filetype: "executable/windows"
-    description: The PE file loads a DLL using either 'LoadLibraryA' or 'LoadLibraryW' that is specified in the SUS_DLLS configuration variable.
+    filetype: "*"
+    description: The process loads a DLL using either 'LoadLibraryA' or 'LoadLibraryW' that is specified in the SUS_DLLS configuration variable.
   - heur_id: 4
     name: High Number of GetProcAddress Calls
     score: 400
-    filetype: "executable/windows"
-    description: The PE file makes excessive number of calls to GetProcAddress in the second half of execution. Malware often dynamically resolves APIs late in execution after unpacking/decryption.
+    filetype: "*"
+    description: The process makes excessive number of calls to GetProcAddress in the second half of execution. Malware often dynamically resolves APIs late in execution after unpacking/decryption.
   - heur_id: 5
     name: Calls Suspicious API Function
     score: 300
-    filetype: "executable/windows"
-    description: The PE file calls an API function that is specified in the SUS_APIS configuration variable.
+    filetype: "*"
+    description: The process calls an API function that is specified in the SUS_APIS configuration variable.
   - heur_id: 6
     name: Dynamic Code Segments Detected
     score: 130
-    filetype: "executable/windows"
-    description: The PE file creates or modifies code segments at runtime. Malware often generates code at runtime to evade static analysis.
+    filetype: "*"
+    description: The process creates or modifies code segments at runtime. Malware often generates code at runtime to evade static analysis.
   - heur_id: 7
     name: Shellcode Detected
     score: 1000
@@ -95,6 +95,11 @@ heuristics:
     score: 1000
     filetype: "*"
     description: Shellcode successfully performed network activity.
+  - heur_id: 9
+    name: Network Activity Detected
+    score: 100
+    filetype: "executable/windows"
+    description: The PE file performs network activity.
 
 # Docker configuration block which defines:
 #  - the name of the docker container that will be created
