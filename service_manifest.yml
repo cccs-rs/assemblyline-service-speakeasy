@@ -3,7 +3,7 @@ name: Speakeasy
 # Version of the service
 version: $SERVICE_TAG
 # Description of the service
-description: Emulates Windows executables via Speakeasy, then analyzes the generated report for malware indicators.
+description: Emulates x86 and amd64 Windows executables and PIE shellcode files via Speakeasy, and analyzes the generated report for malware indicators.
 
 config:
   # A list of Windows API function names that the service will flag as suspicious if called during emulation.
