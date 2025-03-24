@@ -36,7 +36,7 @@ config:
   SHELLCODE_ARCH: "amd64"
 
 # Regex defining the types of files the service accepts and rejects
-accepts: .*
+accepts: code/shell|executable/windows/.*
 
 # At which stage the service should run (one of FILTER, EXTRACT, CORE, SECONDARY, POST, REVIEW)
 # NOTE: Stages are executed in the order defined in the list
