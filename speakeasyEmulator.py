@@ -11,7 +11,7 @@ from assemblyline_v4_service.common.base import ServiceBase
 from assemblyline_v4_service.common.request import ServiceRequest
 from assemblyline_v4_service.common.result import Result, ResultSection
 from speakeasy import Speakeasy
-from speakeasy.errors import SpeakeasyError
+from speakeasy.errors import SpeakeasyError, NotSupportedError
 
 
 def is_shellcode(report, is_pe):
@@ -93,6 +93,10 @@ class SpeakeasyEmulator(ServiceBase):
                 self.se.run_shellcode(shellcode)
 
 
+        except NotSupportedError:
+            # File is not supported by Speakeasy, return an empty result
+            request.result = result
+            return
         except SpeakeasyError as e:
             # Handle Speakeasy errors
             self.log.error(str(e))
